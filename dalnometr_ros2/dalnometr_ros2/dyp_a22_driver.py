@@ -27,8 +27,10 @@ _CMD_MEASURE = 0x01
 _ADDR_CHANGE_MAGIC = bytes([0x55, 0xAA, 0xA2])
 
 # Seconds to wait for conversion after triggering a measurement.
-# 300 ms is conservative — the AA2211AC needs up to ~200-250 ms at room temp.
-_MEASURE_DELAY = 0.300
+# AA2211AC datasheet: ~120-200 ms typical. 200 ms leaves margin without
+# exceeding the 10 Hz (100 ms) timer period at default publish rate.
+# If readings freeze, lower publish_rate_hz below 1 / _MEASURE_DELAY.
+_MEASURE_DELAY = 0.200
 
 
 class DypA22Error(Exception):
