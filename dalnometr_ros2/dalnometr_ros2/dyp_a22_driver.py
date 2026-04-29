@@ -2,7 +2,7 @@
 DYP-A22 (AA2211AC) ultrasonic sensor I2C driver.
 
 Protocol (I2C):
-  Default address : 0x57
+  Default address : 0x57  (this unit found at 0x18)
   Start measure   : write single byte 0x01
   Read result     : read 3 bytes -> [high, low, checksum]
   Distance (mm)   : (high << 8) | low
@@ -12,19 +12,22 @@ Address change:
   Write 4 bytes: [0x55, 0xAA, 0xA2, new_addr]
   The sensor resets and comes up on the new address.
   Valid range: 0x08 – 0x77 (standard 7-bit I2C range).
+
+Note: raw i2c_rdwr is used for reads to avoid the spurious register-address
+byte that read_i2c_block_data sends before switching to read mode.
 """
 
 import time
 import smbus2
 
 
-DEFAULT_ADDRESS = 0x57
+DEFAULT_ADDRESS = 0x18
 
 _CMD_MEASURE = 0x01
 _ADDR_CHANGE_MAGIC = bytes([0x55, 0xAA, 0xA2])
 
 # Seconds to wait for conversion after triggering a measurement
-_MEASURE_DELAY = 0.060
+_MEASURE_DELAY = 0.120
 
 
 class DypA22Error(Exception):
@@ -43,9 +46,7 @@ class DypA22:
     def ping(self) -> bool:
         """Return True if the sensor responds on its I2C address."""
         try:
-            self._bus.write_byte(self._address, _CMD_MEASURE)
-            time.sleep(_MEASURE_DELAY)
-            data = self._bus.read_i2c_block_data(self._address, 0, 3)
+            data = self._read_raw()
             return self._validate(data)
         except OSError:
             return False
@@ -56,19 +57,21 @@ class DypA22:
         Raises DypA22Error on checksum failure or I2C error.
         """
         try:
-            self._bus.write_byte(self._address, _CMD_MEASURE)
-            time.sleep(_MEASURE_DELAY)
-            data = self._bus.read_i2c_block_data(self._address, 0, 3)
+            data = self._read_raw()
         except OSError as exc:
             raise DypA22Error(f"I2C error at 0x{self._address:02X}: {exc}") from exc
 
         if not self._validate(data):
             raise DypA22Error(
-                f"Checksum mismatch at 0x{self._address:02X}: {data}"
+                f"Checksum mismatch at 0x{self._address:02X}: {list(data)}"
             )
 
         distance = (data[0] << 8) | data[1]
         return float(distance)
+
+    def read_raw_bytes(self) -> list:
+        """Return raw 3 bytes from sensor without validation (useful for debugging)."""
+        return list(self._read_raw())
 
     def change_address(self, new_address: int) -> None:
         """
@@ -84,7 +87,8 @@ class DypA22:
             )
         payload = list(_ADDR_CHANGE_MAGIC) + [new_address]
         try:
-            self._bus.write_i2c_block_data(self._address, 0, payload)
+            write_msg = smbus2.i2c_msg.write(self._address, payload)
+            self._bus.i2c_rdwr(write_msg)
         except OSError as exc:
             raise DypA22Error(
                 f"Failed to change address from 0x{self._address:02X}: {exc}"
@@ -93,14 +97,27 @@ class DypA22:
         time.sleep(0.200)
         self._address = new_address
 
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _read_raw(self) -> bytes:
+        """Trigger measurement and return 3 raw bytes using i2c_rdwr."""
+        write_msg = smbus2.i2c_msg.write(self._address, [_CMD_MEASURE])
+        self._bus.i2c_rdwr(write_msg)
+        time.sleep(_MEASURE_DELAY)
+        read_msg = smbus2.i2c_msg.read(self._address, 3)
+        self._bus.i2c_rdwr(read_msg)
+        return bytes(read_msg)
+
     @staticmethod
-    def _validate(data: list) -> bool:
+    def _validate(data: bytes) -> bool:
         if len(data) < 3:
             return False
         return ((data[0] + data[1]) & 0xFF) == data[2]
 
 
-def scan_bus(bus: smbus2.SMBus, candidates: list[int] | None = None) -> list[int]:
+def scan_bus(bus: smbus2.SMBus, candidates: list = None) -> list:
     """
     Return list of I2C addresses where DYP-A22 sensors respond.
 
