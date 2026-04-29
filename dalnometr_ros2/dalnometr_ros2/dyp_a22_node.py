@@ -62,7 +62,7 @@ class DypA22Node(Node):
             self.get_logger().warn("No DYP-A22 sensors detected on I2C bus.")
 
         self._sensors: dict = {}
-        self._publishers: dict = {}
+        self._pubs: dict = {}
 
         for addr in found:
             self._register_sensor(addr)
@@ -99,7 +99,7 @@ class DypA22Node(Node):
         topic = "sensor_{:02x}".format(address)
         pub = self.create_publisher(Range, "~/{}".format(topic), 10)
         self._sensors[address] = sensor
-        self._publishers[address] = pub
+        self._pubs[address] = pub
         self.get_logger().info(
             "Registered sensor 0x{:02X} → topic ~/{}".format(address, topic)
         )
@@ -127,7 +127,7 @@ class DypA22Node(Node):
             msg.max_range = _MAX_RANGE_M
             msg.range = distance_mm / 1000.0  # mm → m
 
-            self._publishers[addr].publish(msg)
+            self._pubs[addr].publish(msg)
 
     # ------------------------------------------------------------------
     # Service: change I2C address
@@ -163,7 +163,7 @@ class DypA22Node(Node):
             return response
 
         # Migrate bookkeeping to new address
-        self.destroy_publisher(self._publishers.pop(old_addr))
+        self.destroy_publisher(self._pubs.pop(old_addr))
         del self._sensors[old_addr]
         self._register_sensor(new_addr)
 
