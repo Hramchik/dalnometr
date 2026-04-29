@@ -14,8 +14,8 @@ from launch_ros.actions import Node
 def generate_launch_description():
     return LaunchDescription(
         [
-            DeclareLaunchArgument("i2c_bus", default_value="3"),
-            DeclareLaunchArgument("addresses", default_value="[24]"),   # 0x18
+            DeclareLaunchArgument("i2c_bus", default_value="1"),
+            DeclareLaunchArgument("addresses", default_value="[116]"),  # 0x74
             DeclareLaunchArgument("scan_all_7bit", default_value="false"),
             DeclareLaunchArgument("publish_rate_hz", default_value="10.0"),
             DeclareLaunchArgument("frame_prefix", default_value="ultrasonic"),

@@ -21,7 +21,7 @@ import time
 import smbus2
 
 
-DEFAULT_ADDRESS = 0x18
+DEFAULT_ADDRESS = 0x74
 
 _CMD_MEASURE = 0x01
 _ADDR_CHANGE_MAGIC = bytes([0x55, 0xAA, 0xA2])

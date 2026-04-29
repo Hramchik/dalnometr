@@ -84,8 +84,8 @@ class DypA22Node(Node):
     # ------------------------------------------------------------------
 
     def _declare_parameters(self):
-        self.declare_parameter("i2c_bus", 3)
-        self.declare_parameter("addresses", [0x18])   # 24 decimal
+        self.declare_parameter("i2c_bus", 1)
+        self.declare_parameter("addresses", [0x74])   # 116 decimal
         self.declare_parameter("scan_all_7bit", False)
         self.declare_parameter("publish_rate_hz", 10.0)
         self.declare_parameter("frame_prefix", "ultrasonic")
