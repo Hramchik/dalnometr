@@ -15,8 +15,8 @@ import smbus2
 
 
 def main():
-    bus_id = int(sys.argv[1]) if len(sys.argv) > 1 else 3
-    addr = int(sys.argv[2], 16) if len(sys.argv) > 2 else 0x18
+    bus_id = int(sys.argv[1]) if len(sys.argv) > 1 else 1
+    addr = int(sys.argv[2], 16) if len(sys.argv) > 2 else 0x74
 
     print(f"Opening /dev/i2c-{bus_id}, probing 0x{addr:02X}")
     bus = smbus2.SMBus(bus_id)

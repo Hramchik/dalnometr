@@ -44,6 +44,20 @@ class DypA22:
     def address(self) -> int:
         return self._address
 
+    def init(self) -> bool:
+        """
+        Verify the sensor is present and returns a plausible reading.
+        Returns True on success, False if the device is absent or unresponsive.
+        Intended for startup checks — does not raise exceptions.
+        """
+        if not self.ping():
+            return False
+        try:
+            self.read_distance_mm()
+            return True
+        except DypA22Error:
+            return False
+
     def ping(self) -> bool:
         """
         Return True if the sensor responds on its I2C address.
