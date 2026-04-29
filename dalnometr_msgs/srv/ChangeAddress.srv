@@ -1,0 +1,7 @@
+# Request: change the I2C address of a DYP-A22 sensor at runtime
+uint8 current_address   # current 7-bit I2C address (e.g. 0x57 = 87)
+uint8 new_address       # desired 7-bit I2C address (valid: 0x08–0x77)
+---
+# Response
+bool   success
+string message
