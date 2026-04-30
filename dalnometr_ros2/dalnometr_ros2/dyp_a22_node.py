@@ -15,6 +15,8 @@ Parameters:
   frame_prefix     (str,   default "ultrasonic") — tf frame_id prefix
 """
 
+import math
+
 import rclpy
 from rclpy.node import Node
 import smbus2
@@ -125,7 +127,8 @@ class DypA22Node(Node):
             msg.field_of_view = _FIELD_OF_VIEW_RAD
             msg.min_range = _MIN_RANGE_M
             msg.max_range = _MAX_RANGE_M
-            msg.range = distance_mm / 1000.0  # mm → m
+            # math.inf = no echo (sensor_msgs/Range convention for out-of-range)
+            msg.range = math.inf if math.isinf(distance_mm) else distance_mm / 1000.0
 
             self._pubs[addr].publish(msg)
 

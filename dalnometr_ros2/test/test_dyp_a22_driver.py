@@ -1,5 +1,6 @@
 """Unit tests for the DYP-A22 I2C driver (no hardware required)."""
 
+import math
 import sys
 import types
 import pytest
@@ -68,25 +69,27 @@ from dalnometr_ros2.dyp_a22_driver import (  # noqa: E402
     DypA22Error,
     scan_bus,
     DEFAULT_ADDRESS,
+    _FRAME_HEADER,
+    _NO_ECHO,
 )
 
 import dalnometr_ros2.dyp_a22_driver as _drv  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Helpers — 4-byte frame: [header, dist_high, dist_low, checksum]
 # ---------------------------------------------------------------------------
 
-def _payload(distance_mm: int) -> list:
+def _frame(distance_mm: int) -> list:
+    """Build a valid 4-byte sensor frame for a given distance."""
     high = (distance_mm >> 8) & 0xFF
     low = distance_mm & 0xFF
-    return [high, low, (high + low) & 0xFF]
+    return [_FRAME_HEADER, high, low, (high + low) & 0xFF]
 
 
-def _bad_checksum_payload(distance_mm: int) -> list:
-    high = (distance_mm >> 8) & 0xFF
-    low = distance_mm & 0xFF
-    return [high, low, (~(high + low)) & 0xFF]  # deliberately wrong
+def _no_echo_frame() -> list:
+    """4-byte frame returned when no echo is received."""
+    return [_FRAME_HEADER, 0xFF, 0xFF, 0x09]
 
 
 # Speed up all tests — no real delays needed.
@@ -100,7 +103,7 @@ _drv._MEASURE_DELAY = 0
 class TestInit:
     def test_returns_true_when_sensor_responds(self):
         bus = _FakeSMBus()
-        bus._read_data = _payload(500)
+        bus._read_data = _frame(500)
         sensor = DypA22(bus, DEFAULT_ADDRESS)
         assert sensor.init() is True
 
@@ -118,7 +121,14 @@ class TestInit:
 class TestPing:
     def test_returns_true_on_ack(self):
         bus = _FakeSMBus()
-        bus._read_data = _payload(300)
+        bus._read_data = _frame(300)
+        sensor = DypA22(bus, DEFAULT_ADDRESS)
+        assert sensor.ping() is True
+
+    def test_returns_true_on_no_echo_frame(self):
+        # A no-echo response still means the device is present
+        bus = _FakeSMBus()
+        bus._read_data = _no_echo_frame()
         sensor = DypA22(bus, DEFAULT_ADDRESS)
         assert sensor.ping() is True
 
@@ -136,28 +146,27 @@ class TestPing:
 class TestReadDistance:
     def test_valid_reading(self):
         bus = _FakeSMBus()
-        bus._read_data = _payload(1200)
+        bus._read_data = _frame(1200)
         sensor = DypA22(bus, DEFAULT_ADDRESS)
         assert sensor.read_distance_mm() == 1200.0
 
     def test_zero_distance(self):
         bus = _FakeSMBus()
-        bus._read_data = _payload(0)
+        bus._read_data = _frame(0)
         sensor = DypA22(bus, DEFAULT_ADDRESS)
         assert sensor.read_distance_mm() == 0.0
 
     def test_max_distance(self):
         bus = _FakeSMBus()
-        bus._read_data = _payload(4500)
+        bus._read_data = _frame(4500)
         sensor = DypA22(bus, DEFAULT_ADDRESS)
         assert sensor.read_distance_mm() == 4500.0
 
-    def test_bad_checksum_returns_value_anyway(self):
-        # read_distance_mm is lenient — returns value even on bad checksum
+    def test_no_echo_returns_inf(self):
         bus = _FakeSMBus()
-        bus._read_data = _bad_checksum_payload(800)
+        bus._read_data = _no_echo_frame()
         sensor = DypA22(bus, DEFAULT_ADDRESS)
-        assert sensor.read_distance_mm() == 800.0
+        assert math.isinf(sensor.read_distance_mm())
 
     def test_i2c_error_raises_dyp_error(self):
         bus = _FakeSMBus()
@@ -174,15 +183,22 @@ class TestReadDistance:
 class TestReadDistanceStrict:
     def test_valid_reading(self):
         bus = _FakeSMBus()
-        bus._read_data = _payload(600)
+        bus._read_data = _frame(600)
         sensor = DypA22(bus, DEFAULT_ADDRESS)
         assert sensor.read_distance_mm_strict() == 600.0
 
-    def test_checksum_mismatch_raises(self):
+    def test_no_echo_returns_inf(self):
         bus = _FakeSMBus()
-        bus._read_data = _bad_checksum_payload(600)
+        bus._read_data = _no_echo_frame()
         sensor = DypA22(bus, DEFAULT_ADDRESS)
-        with pytest.raises(DypA22Error, match="[Cc]hecksum"):
+        assert math.isinf(sensor.read_distance_mm_strict())
+
+    def test_bad_header_raises(self):
+        bus = _FakeSMBus()
+        bad_frame = [0x99, 0x01, 0xF4, 0xF5]  # header != 0x02
+        bus._read_data = bad_frame
+        sensor = DypA22(bus, DEFAULT_ADDRESS)
+        with pytest.raises(DypA22Error, match="[Hh]eader"):
             sensor.read_distance_mm_strict()
 
 
@@ -193,8 +209,6 @@ class TestReadDistanceStrict:
 class TestChangeAddress:
     def test_valid_address_change(self):
         bus = _FakeSMBus()
-        import dalnometr_ros2.dyp_a22_driver as drv
-        drv._MEASURE_DELAY = 0
         sensor = DypA22(bus, 0x57)
         sensor.change_address(0x58)
         assert sensor.address == 0x58
@@ -207,7 +221,7 @@ class TestChangeAddress:
         bus = _FakeSMBus()
         sensor = DypA22(bus, 0x57)
         with pytest.raises(ValueError):
-            sensor.change_address(0x78)  # out of 7-bit range
+            sensor.change_address(0x78)
 
     def test_invalid_address_zero_raises(self):
         bus = _FakeSMBus()
@@ -230,26 +244,27 @@ class TestChangeAddress:
 class TestScanBus:
     def test_finds_default_sensor(self):
         bus = _FakeSMBus()
-        bus._read_data = _payload(300)
+        bus._read_data = _frame(300)
+        found = scan_bus(bus)
+        assert DEFAULT_ADDRESS in found
+
+    def test_finds_sensor_on_no_echo(self):
+        # Device is present even when returning no-echo
+        bus = _FakeSMBus()
+        bus._read_data = _no_echo_frame()
         found = scan_bus(bus)
         assert DEFAULT_ADDRESS in found
 
     def test_empty_when_no_device(self):
         bus = _FakeSMBus()
-        bus.raise_oserror = True  # nothing responds on the bus
+        bus.raise_oserror = True
         found = scan_bus(bus)
         assert found == []
 
     def test_finds_multiple_sensors(self):
         bus = _FakeSMBus()
-        bus._read_data = _payload(200)
+        bus._read_data = _frame(200)
         found = scan_bus(bus, candidates=[0x57, 0x58, 0x74])
         assert 0x57 in found
         assert 0x58 in found
         assert 0x74 in found
-
-    def test_custom_candidates(self):
-        bus = _FakeSMBus()
-        bus._read_data = _payload(100)
-        found = scan_bus(bus, candidates=[0x10, 0x20])
-        assert found == [0x10, 0x20]

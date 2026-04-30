@@ -1,14 +1,18 @@
 """
 Diagnostic script — run without ROS2 to verify I2C communication.
 
+Frame format: [header=0x02, dist_high, dist_low, checksum]
+No-echo sentinel: dist_high=0xFF, dist_low=0xFF (0xFFFF)
+
 Usage:
   python3 debug_scan.py [bus] [addr_hex]
 
 Examples:
-  python3 debug_scan.py           # bus=3, addr=0x18
-  python3 debug_scan.py 3 0x57   # custom address
+  python3 debug_scan.py           # bus=1, addr=0x74
+  python3 debug_scan.py 1 0x57   # custom address
 """
 
+import math
 import sys
 import time
 import smbus2
@@ -26,16 +30,19 @@ def main():
         try:
             write_msg = smbus2.i2c_msg.write(addr, [0x01])
             bus.i2c_rdwr(write_msg)
-            time.sleep(0.120)
-            read_msg = smbus2.i2c_msg.read(addr, 3)
+            time.sleep(0.200)
+            read_msg = smbus2.i2c_msg.read(addr, 4)
             bus.i2c_rdwr(read_msg)
             data = list(read_msg)
-            high, low, chk = data
-            distance = (high << 8) | low
-            expected_chk = (high + low) & 0xFF
-            chk_ok = "OK" if chk == expected_chk else f"BAD (expected {expected_chk:#04x})"
+            header, high, low, chk = data
+            raw = (high << 8) | low
+            if raw == 0xFFFF:
+                dist_str = "NO ECHO"
+            else:
+                dist_str = f"{raw} mm"
+            header_ok = "OK" if header == 0x02 else f"UNEXPECTED (0x{header:02x})"
             print(f"  [{i+1:2d}] bytes={[f'{b:#04x}' for b in data]}  "
-                  f"distance={distance} mm  checksum={chk_ok}")
+                  f"header={header_ok}  distance={dist_str}")
         except OSError as e:
             print(f"  [{i+1:2d}] OSError: {e}")
         time.sleep(0.1)

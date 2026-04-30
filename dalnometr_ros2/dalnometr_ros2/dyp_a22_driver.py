@@ -1,12 +1,13 @@
 """
 DYP-A22 (AA2211AC) ultrasonic sensor I2C driver.
 
-Protocol (I2C):
+Protocol (I2C) — 4-byte frame:
   Default address : 0x74  (factory default for this unit)
   Start measure   : write single byte 0x01
-  Read result     : read 3 bytes -> [high, low, checksum]
-  Distance (mm)   : (high << 8) | low
-  Checksum        : (high + low) & 0xFF
+  Read result     : read 4 bytes -> [header, high, low, checksum]
+    header   : 0x02 (fixed frame marker)
+    Distance : (high << 8) | low  in mm
+    No-echo  : high == 0xFF and low == 0xFF  (0xFFFF sentinel)
 
 Address change:
   Write 4 bytes: [0x55, 0xAA, 0xA2, new_addr]
@@ -17,6 +18,7 @@ Note: raw i2c_rdwr is used for reads to avoid the spurious register-address
 byte that read_i2c_block_data sends before switching to read mode.
 """
 
+import math
 import time
 import smbus2
 
@@ -24,11 +26,13 @@ import smbus2
 DEFAULT_ADDRESS = 0x74
 
 _CMD_MEASURE = 0x01
+_FRAME_HEADER = 0x02
+_NO_ECHO = 0xFFFF          # sensor sentinel: no echo received
 _ADDR_CHANGE_MAGIC = bytes([0x55, 0xAA, 0xA2])
 
 # Seconds to wait for conversion after triggering a measurement.
 # AA2211AC datasheet: ~120-200 ms typical. 200 ms leaves margin without
-# exceeding the 10 Hz (100 ms) timer period at default publish rate.
+# exceeding the 4 Hz (250 ms) timer period at default publish rate.
 # If readings freeze, lower publish_rate_hz below 1 / _MEASURE_DELAY.
 _MEASURE_DELAY = 0.200
 
@@ -63,14 +67,13 @@ class DypA22:
     def ping(self) -> bool:
         """
         Return True if the sensor responds on its I2C address.
-        Checksum is not required to pass — we only check that the device
-        ACKs and returns non-zero data (distance > 0 or any byte non-zero).
+        A no-echo (0xFFFF) response still counts as a live device.
         """
         try:
             write_msg = smbus2.i2c_msg.write(self._address, [_CMD_MEASURE])
             self._bus.i2c_rdwr(write_msg)
             time.sleep(_MEASURE_DELAY)
-            read_msg = smbus2.i2c_msg.read(self._address, 3)
+            read_msg = smbus2.i2c_msg.read(self._address, 4)
             self._bus.i2c_rdwr(read_msg)
             return True  # device ACKed — it's there
         except OSError:
@@ -79,39 +82,31 @@ class DypA22:
     def read_distance_mm(self) -> float:
         """
         Trigger a measurement and return distance in millimetres.
-        Logs a warning on checksum failure but still returns the value.
-        Raises DypA22Error only on I2C communication error.
+        Returns math.inf when the sensor reports no echo (0xFFFF sentinel).
+        Raises DypA22Error on I2C communication error.
         """
-        try:
-            data = self._read_raw()
-        except OSError as exc:
-            raise DypA22Error(f"I2C error at 0x{self._address:02X}: {exc}") from exc
-
-        if not self._validate(data):
-            # Return the value anyway — checksum errors can occur on marginal
-            # pull-up resistors or long cables; the distance may still be valid.
-            pass
-
-        distance = (data[0] << 8) | data[1]
-        return float(distance)
+        header, high, low = self._read_frame()
+        raw = (high << 8) | low
+        if raw == _NO_ECHO:
+            return math.inf
+        return float(raw)
 
     def read_distance_mm_strict(self) -> float:
-        """Same as read_distance_mm but raises DypA22Error on bad checksum."""
-        try:
-            data = self._read_raw()
-        except OSError as exc:
-            raise DypA22Error(f"I2C error at 0x{self._address:02X}: {exc}") from exc
-
-        if not self._validate(data):
+        """
+        Same as read_distance_mm but raises DypA22Error on wrong frame header.
+        """
+        header, high, low = self._read_frame()
+        if header != _FRAME_HEADER:
             raise DypA22Error(
-                f"Checksum mismatch at 0x{self._address:02X}: {list(data)}"
+                f"Unexpected frame header 0x{header:02X} at 0x{self._address:02X}"
             )
-
-        distance = (data[0] << 8) | data[1]
-        return float(distance)
+        raw = (high << 8) | low
+        if raw == _NO_ECHO:
+            return math.inf
+        return float(raw)
 
     def read_raw_bytes(self) -> list:
-        """Return raw 3 bytes from sensor without validation (useful for debugging)."""
+        """Return raw 4 bytes from sensor without validation (useful for debugging)."""
         return list(self._read_raw())
 
     def change_address(self, new_address: int) -> None:
@@ -143,19 +138,25 @@ class DypA22:
     # ------------------------------------------------------------------
 
     def _read_raw(self) -> bytes:
-        """Trigger measurement and return 3 raw bytes using i2c_rdwr."""
+        """Trigger measurement and return 4 raw bytes using i2c_rdwr."""
         write_msg = smbus2.i2c_msg.write(self._address, [_CMD_MEASURE])
         self._bus.i2c_rdwr(write_msg)
         time.sleep(_MEASURE_DELAY)
-        read_msg = smbus2.i2c_msg.read(self._address, 3)
+        read_msg = smbus2.i2c_msg.read(self._address, 4)
         self._bus.i2c_rdwr(read_msg)
         return bytes(read_msg)
 
-    @staticmethod
-    def _validate(data: bytes) -> bool:
-        if len(data) < 3:
-            return False
-        return ((data[0] + data[1]) & 0xFF) == data[2]
+    def _read_frame(self) -> tuple:
+        """
+        Return (header, high, low) from a fresh measurement.
+        Raises DypA22Error on I2C error.
+        """
+        try:
+            data = self._read_raw()
+        except OSError as exc:
+            raise DypA22Error(f"I2C error at 0x{self._address:02X}: {exc}") from exc
+        # Frame: [header, dist_high, dist_low, checksum]
+        return data[0], data[1], data[2]
 
 
 def scan_bus(bus: smbus2.SMBus, candidates: list = None) -> list:
